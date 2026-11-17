@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<!--
+  ══════════════════════════════════════════════════════════════════════════════════
+  NEON TIC-TAC-TOE — a single-file, zero-dependency game
+  ══════════════════════════════════════════════════════════════════════════════════
+
+  FEATURES
+  ────────
+  · Dark glassmorphism + neon aesthetic with a multi-color animated gradient background
+  · Glowing X (pink) and O (cyan) marks with a spring pop-in animation
+  · Responsive, centered 3×3 board
+  · Live status line announcing whose turn it is (and the outcome)
+  · Scoreboard (X wins / O wins / draws) persisted in localStorage
+  · Winning line highlighted with a glowing overlay
+  · Restart (clears board, keeps score) and Reset Scores (clears everything)
+  · Mode toggle: "2 Players" or "vs Computer"
+  · Unbeatable Computer powered by the minimax algorithm with alpha-beta pruning
+  · Keyboard accessible — every control is a real <button> with an aria-label
+  · Full JSDoc + inline comments on every JavaScript function; every CSS section documented
+
+  STRUCTURE
+  ─────────
+  1.  <head>  →  <style>  (organized: variables → base → background → layout →
+                  scoreboard → status → board → marks → overlay → buttons →
+                  footer → animations → responsive)
+  2.  <body>  →  header / scoreboard / status / board / controls / footer
+  3.  <script> →  CONFIG & state, DOM refs, score persistence, game logic,
+                  minimax AI, event wiring, init
+  ══════════════════════════════════════════════════════════════════════════════════
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>Neon Tic-Tac-Toe</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════════════
+   1. CSS CUSTOM PROPERTIES (design tokens)
+   Centralised colours, glows, radii, transitions so the whole theme is
+   consistent and easy to re-skin.
+   ══════════════════════════════════════════════════════════════════════════════ */
+:root {
+  --bg-base:      #07080f;
+  --bg-grad-1:    rgba(255, 46, 149, 0.20);
+  --bg-grad-2:    rgba(0, 225, 255, 0.16);
+  --bg-grad-3:    rgba(168, 85, 247, 0.16);
+
+  --text:         #e9ecff;
+  --text-dim:     #9aa3c7;
+  --muted:        #7a83a6;
+
+  --x-color:      #ff2e95;
+  --o-color:      #00e1ff;
+  --x-glow:       0 0 10px rgba(255, 46, 149, 0.85), 0 0 26px rgba(255, 46, 149, 0.55);
+  --o-glow:       0 0 10px rgba(0, 225, 255, 0.85), 0 0 26px rgba(0, 225, 255, 0.55);
+  --accent:       #ff2e95;
+  --win-line:     #ffe45e;
+  --win-glow:     0 0 12px rgba(255, 228, 94, 0.85), 0 0 34px rgba(255, 228, 94, 0.5);
+
+  --glass-bg:     rgba(255, 255, 255, 0.045);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-blur:   16px;
+
+  --radius:       22px;
+  --radius-sm:    14px;
+  --gap:          10px;
+
+  --ease-pop:     cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   2. BASE / RESET
+   Normalise the box model, remove default margins, set the dark body colour
+   and a readable default font stack.
+   ══════════════════════════════════════════════════════════════════════════════ */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  min-height: 100vh;
+  background: var(--bg-base);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   3. ANIMATED BACKGROUND
+   Three large, soft radial glows (pink / cyan / violet) that drift slowly.
+   Fixed + pointer-events:none so it never blocks interaction.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+.background::before {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  background:
+    radial-gradient(40% 50% at 18% 22%, var(--bg-grad-1), transparent 60%),
+    radial-gradient(42% 52% at 82% 30%, var(--bg-grad-2), transparent 60%),
+    radial-gradient(46% 54% at 52% 82%, var(--bg-grad-3), transparent 62%);
+  animation: floatGlow 22s ease-in-out infinite alternate;
+}
+@keyframes floatGlow {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(4%, -3%, 0) scale(1.08); }
+  100% { transform: translate3d(-3%, 4%, 0) scale(1.02); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   4. LAYOUT / CONTAINER
+   A centred column that stacks every part of the UI and scrolls on small screens.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 28px 16px 34px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   5. HEADER / TITLE
+   The wordmark. A subtle animated gradient border is drawn with a
+   mask-composite technique (see the ::before pseudo-element).
+   ══════════════════════════════════════════════════════════════════════════════ */
+.title {
+  margin: 0;
+  font-size: clamp(2.1rem, 8.5vw, 3.4rem);
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  padding-left: 0.24em; /* offsets the letter-spacing so the text stays centred */
+  text-transform: uppercase;
+  color: #fff;
+  text-align: center;
+  position: relative;
+  text-shadow: 0 0 22px rgba(255, 46, 149, 0.35), 0 0 22px rgba(0, 225, 255, 0.35);
+}
+/* Animated gradient "border" that fades to transparent at the ends */
+.title::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  padding: 1.5px;
+  background: linear-gradient(120deg, var(--x-color), var(--o-color), #a855f7, var(--x-color));
+  background-size: 300% 300%;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: borderShift 8s linear infinite;
+  opacity: 0.85;
+}
+@keyframes borderShift { to { background-position: 300% 0; } }
+.subtitle {
+  margin: 10px 0 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   6. SCOREBOARD
+   Three glass tiles — X WINS / DRAWS / O WINS — each with its own accent colour.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.scoreboard {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  width: 100%;
+}
+.score {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+          backdrop-filter: blur(var(--glass-blur));
+  border-radius: var(--radius-sm);
+  padding: 12px 8px;
+  text-align: center;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.score.is-active {
+  border-color: currentColor;
+  box-shadow: 0 0 18px -6px currentColor, inset 0 0 22px -16px currentColor;
+  transform: translateY(-2px);
+}
+.score-label {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+.score-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.score-x   { color: var(--x-color); }
+.score-o   { color: var(--o-color); }
+.score-draw{ color: var(--muted);   }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   7. STATUS LINE
+   Announces the current turn or the result. Colours shift to the active player
+   via data attributes so it "glows" to match.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.status {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: center;
+  min-height: 1.6em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.25s ease, text-shadow 0.25s ease;
+}
+.status[data-turn="X"] { color: var(--x-color); text-shadow: var(--x-glow); }
+.status[data-turn="O"] { color: var(--o-color); text-shadow: var(--o-glow); }
+.status[data-result="win"]  { color: #fff; text-shadow: 0 0 18px rgba(255, 255, 255, 0.5); }
+.status[data-result="draw"] { color: var(--muted); }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   8. BOARD
+   A 3×3 CSS grid inside a glass panel. A faint grid of neon lines is drawn
+   behind the cells using two linear-gradients.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.board-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-width: 420px;
+  border-radius: var(--radius);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+          backdrop-filter: blur(var(--glass-blur));
+  box-shadow: inset 0 0 40px -24px rgba(0, 225, 255, 0.5),
+              0 24px 60px -30px rgba(0, 0, 0, 0.8);
+  padding: var(--gap);
+  overflow: hidden;
+}
+/* Neon grid lines */
+.board-wrap::before {
+  content: "";
+  position: absolute;
+  inset: var(--gap);
+  background:
+    linear-gradient(to right, transparent calc(33.333% - 1px), rgba(255,255,255,0.09) 33.333%, transparent calc(33.333% + 1px)),
+    linear-gradient(to right, transparent calc(66.666% - 1px), rgba(255,255,255,0.09) 66.666%, transparent calc(66.666% + 1px)),
+    linear-gradient(to bottom, transparent calc(33.333% - 1px), rgba(255,255,255,0.09) 33.333%, transparent calc(33.333% + 1px)),
+    linear-gradient(to bottom, transparent calc(66.666% - 1px), rgba(255,255,255,0.09) 66.666%, transparent calc(66.666% + 1px));
+  pointer-events: none;
+  z-index: 0;
+}
+.board {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: var(--gap);
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Cell (a real button for keyboard access) ──────────────────────────────── */
+.cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1 / 1;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease;
+}
+.cell:hover { background: rgba(255, 255, 255, 0.05); }
+.cell:active { transform: scale(0.96); }
+.cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(255, 46, 149, 0.25);
+}
+.cell.is-locked { cursor: default; }
+/* While the AI is "thinking" (vs Computer), block interaction */
+.board.is-thinking .cell { cursor: wait; }
+.board.is-thinking .cell:not(.is-filled):hover { background: transparent; }
+
+/* Winning cells — brighten + glow */
+.cell.is-win {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 26px -6px var(--win-line), 0 0 20px -6px var(--win-line);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   9. MARKS (X / O)
+   The X is a pair of crossed bars; the O is a ring. Each animates in with a
+   spring "pop" (scale 0 → 1.2 → 1) and carries a neon glow.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.mark {
+  font-size: 0; /* hide the fallback letter; the shape is drawn with CSS */
+  position: absolute;
+  inset: 14%;
+  pointer-events: none;
+  opacity: 0;
+  animation: popIn 0.42s var(--ease-pop) both;
+}
+@keyframes popIn {
+  0%   { transform: scale(0);   opacity: 0; }
+  60%  { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+/* X = two crossing bars, each rotated 45deg, both glowing pink */
+.mark-x { color: var(--x-color); filter: var(--x-glow); }
+.mark-x::before,
+.mark-x::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 82%;
+  height: 16%;
+  background: currentColor;
+  border-radius: 999px;
+}
+.mark-x::before { transform: translate(-50%, -50%) rotate(45deg); }
+.mark-x::after  { transform: translate(-50%, -50%) rotate(-45deg); }
+/* O = a hollow ring glowing cyan */
+.mark-o {
+  color: var(--o-color);
+  box-sizing: border-box;
+  border: clamp(8px, 2.6vw, 13px) solid currentColor;
+  border-radius: 50%;
+  filter: var(--o-glow);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   10. WINNING-LINE OVERLAY
+   A single glowing bar whose width/rotation/position are set inline from JS.
+   Fades + draws in via transform scale on X.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.win-line {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  height: 8px;
+  width: 0;
+  background: linear-gradient(90deg, transparent, var(--win-line) 25%, var(--win-line) 75%, transparent);
+  border-radius: 999px;
+  filter: var(--win-glow);
+  transform: translate(-50%, -50%) rotate(0deg) scaleX(0);
+  transform-origin: center;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+}
+.win-line.show {
+  opacity: 1;
+  animation: drawLine 0.5s var(--ease-pop) forwards;
+}
+@keyframes drawLine { to { transform: translate(-50%, -50%) rotate(var(--rot)) scaleX(1); } }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   11. CONTROLS
+   The segmented mode toggle (2 Players / vs Computer) and the action buttons.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.controls {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* Segmented control — two glass buttons, the active one lit */
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+          backdrop-filter: blur(var(--glass-blur));
+  border-radius: 999px;
+  padding: 6px;
+}
+.seg-btn {
+  border: 0;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.is-active {
+  color: #fff;
+  background: linear-gradient(120deg, rgba(255, 46, 149, 0.25), rgba(0, 225, 255, 0.25));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 0 20px -8px rgba(0, 225, 255, 0.6);
+}
+.seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.actions { display: flex; gap: 12px; }
+.btn {
+  flex: 1;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+          backdrop-filter: blur(var(--glass-blur));
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: 0.05em;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+}
+.btn:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.28); }
+.btn:active { transform: translateY(0); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.btn-primary {
+  background: linear-gradient(120deg, rgba(255, 46, 149, 0.28), rgba(168, 85, 247, 0.28));
+  box-shadow: 0 0 22px -10px var(--x-color);
+}
+.btn-primary:hover { box-shadow: 0 0 30px -8px var(--x-color); }
+.btn-danger:hover {
+  border-color: rgba(255, 46, 149, 0.6);
+  box-shadow: 0 0 24px -10px var(--x-color);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   12. FOOTER
+   Small, dim keyboard hint.
+   ══════════════════════════════════════════════════════════════════════════════ */
+.footnote {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+.footnote kbd {
+  font-family: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   13. RESPONSIVE ADJUSTMENTS
+   ══════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 380px) {
+  .app { gap: 16px; padding-top: 20px; }
+  .score-value { font-size: 1.25rem; }
+  .btn { font-size: 0.82rem; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   14. REDUCED MOTION
+   Respect users who prefer less animation.
+   ══════════════════════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .mark { opacity: 1; }
+}
+</style>
+</head>
+<body>
+  <!-- Animated neon background layer -->
+  <div class="background" aria-hidden="true"></div>
+
+  <main class="app">
+    <!-- Wordmark -->
+    <header class="header">
+      <h1 class="title">Tic&nbsp;Tac&nbsp;Toe</h1>
+      <p class="subtitle">Neon Edition</p>
+    </header>
+
+    <!-- Scoreboard: X wins / draws / O wins -->
+    <section class="scoreboard" aria-label="Scoreboard">
+      <div class="score score-x is-active" id="tileX">
+        <span class="score-label">X Wins</span>
+        <span class="score-value" id="scoreX">0</span>
+      </div>
+      <div class="score score-draw" id="tileDraw">
+        <span class="score-label">Draws</span>
+        <span class="score-value" id="scoreDraw">0</span>
+      </div>
+      <div class="score score-o" id="tileO">
+        <span class="score-label">O Wins</span>
+        <span class="score-value" id="scoreO">0</span>
+      </div>
+    </section>
+
+    <!-- Whose turn / result -->
+    <p class="status" id="status" data-turn="X" aria-live="polite">Player X's turn</p>
+
+    <!-- Board -->
+    <div class="board-wrap">
+      <div class="board" id="board" role="grid" aria-label="Tic-tac-toe board">
+        <button class="cell" type="button" data-index="0" aria-label="Cell 1, empty"></button>
+        <button class="cell" type="button" data-index="1" aria-label="Cell 2, empty"></button>
+        <button class="cell" type="button" data-index="2" aria-label="Cell 3, empty"></button>
+        <button class="cell" type="button" data-index="3" aria-label="Cell 4, empty"></button>
+        <button class="cell" type="button" data-index="4" aria-label="Cell 5, empty"></button>
+        <button class="cell" type="button" data-index="5" aria-label="Cell 6, empty"></button>
+        <button class="cell" type="button" data-index="6" aria-label="Cell 7, empty"></button>
+        <button class="cell" type="button" data-index="7" aria-label="Cell 8, empty"></button>
+        <button class="cell" type="button" data-index="8" aria-label="Cell 9, empty"></button>
+        <div class="win-line" id="winLine" aria-hidden="true"></div>
+      </div>
+    </div>
+
+    <!-- Mode toggle + actions -->
+    <div class="controls">
+      <div class="segmented" role="group" aria-label="Game mode">
+        <button class="seg-btn is-active" type="button" id="modePvp" aria-pressed="true"  aria-label="Play with two human players">2 Players</button>
+        <button class="seg-btn"           type="button" id="modeCpu" aria-pressed="false" aria-label="Play against the computer">vs Computer</button>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" type="button" id="restartBtn" aria-label="Restart the current game, keeping the scoreboard">Restart</button>
+        <button class="btn btn-danger"  type="button" id="resetBtn"   aria-label="Reset the scoreboard and start a new game">Reset Scores</button>
+      </div>
+    </div>
+
+    <footer class="footnote">
+      Press <kbd>1</kbd>–<kbd>9</kbd> or Tab + Enter to place a mark.
+    </footer>
+  </main>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════════
+   CONFIGURATION & GAME STATE
+   ══════════════════════════════════════════════════════════════════════════════ */
+const CONFIG = {
+  /** localStorage key used to persist the scoreboard. */
+  STORAGE_KEY: 'neon_ttt_scores',
+  /** How many moves of lookahead minimax searches (3 = full & unbeatable on 3×3). */
+  MAX_DEPTH: 9,
+  /** Small delay before the computer plays, so it feels "thinking". */
+  AI_DELAY: 380,
+  /** Human moves first each round. */
+  HUMAN: 'X',
+  AI: 'O',
+};
+
+/**
+ * @typedef {Object} Scores
+ * @property {number} x     - Number of wins for X.
+ * @property {number} o     - Number of wins for O.
+ * @property {number} draws - Number of drawn games.
+ */
+
+/**
+ * Application state, kept in a single object.
+ * @type {{
+ *   board: (string|null)[],
+ *   current: 'X'|'O',
+ *   mode: 'pvp'|'cpu',
+ *   gameOver: boolean,
+ *   scores: Scores,
+ *   aiTimer: number|null
+ * }}
+ */
+const state = {
+  board: Array(9).fill(null),
+  current: 'X',
+  mode: 'pvp',
+  gameOver: false,
+  scores: { x: 0, o: 0, draws: 0 },
+  aiTimer: null,
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   DOM REFERENCES
+   ══════════════════════════════════════════════════════════════════════════════ */
+const boardEl    = document.getElementById('board');
+const cells      = Array.from(boardEl.querySelectorAll('.cell'));
+const winLineEl  = document.getElementById('winLine');
+const statusEl   = document.getElementById('status');
+const scoreXEl   = document.getElementById('scoreX');
+const scoreOEl   = document.getElementById('scoreO');
+const scoreDEl   = document.getElementById('scoreDraw');
+const tileX      = document.getElementById('tileX');
+const tileO      = document.getElementById('tileO');
+const modePvp    = document.getElementById('modePvp');
+const modeCpu    = document.getElementById('modeCpu');
+const restartBtn = document.getElementById('restartBtn');
+const resetBtn   = document.getElementById('resetBtn');
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SCORE PERSISTENCE (localStorage)
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Load saved scores from localStorage, falling back to zeroes on any error.
+ * @returns {Scores} The loaded (or default) score object.
+ */
+function loadScores() {
+  try {
+    const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
+    if (!raw) return { x: 0, o: 0, draws: 0 };
+    const parsed = JSON.parse(raw);
+    return { x: parsed.x | 0, o: parsed.o | 0, draws: parsed.draws | 0 };
+  } catch {
+    return { x: 0, o: 0, draws: 0 };
+  }
+}
+
+/**
+ * Persist the current scores to localStorage.
+ */
+function saveScores() {
+  try {
+    localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(state.scores));
+  } catch (_) { /* quota / privacy mode – ignore */ }
+}
+
+/**
+ * Reflect state.scores into the DOM.
+ */
+function renderScores() {
+  scoreXEl.textContent  = state.scores.x;
+  scoreOEl.textContent  = state.scores.o;
+  scoreDEl.textContent  = state.scores.draws;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   WIN DETECTION
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/** All eight winning triplets. */
+const WIN_LINES = [
+  [0,1,2],[3,4,5],[6,7,8], // rows
+  [0,3,6],[1,4,7],[2,5,8], // cols
+  [0,4,8],[2,4,6],         // diagonals
+];
+
+/**
+ * Check the board for a winner.
+ * @param {(string|null)[]} board
+ * @returns {{player: string, line: number[]}|null}
+ */
+function getWinner(board) {
+  for (const line of WIN_LINES) {
+    const [a, b, c] = line;
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+      return { player: board[a], line };
+    }
+  }
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   RENDERING
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Render every cell's content, fill-state, and aria-label from state.board.
+ */
+function renderBoard() {
+  cells.forEach((cell, i) => {
+    const val = state.board[i];
+    cell.innerHTML = val ? `<span class="mark mark-${val.toLowerCase()}">${val}</span>` : '';
+    cell.classList.toggle('is-filled', !!val);
+    cell.setAttribute('aria-label', `Cell ${i + 1}, ${val || 'empty'}`);
+  });
+}
+
+/**
+ * Position and show the animated win line over the winning triplet.
+ * @param {number[]} line - Three board indices.
+ */
+function showWinLine(line) {
+  const boardRect = boardEl.getBoundingClientRect();
+  const cellsRect = line.map(i => cells[i].getBoundingClientRect());
+  const first = cellsRect[0], last = cellsRect[2];
+  const cx1 = first.left + first.width / 2 - boardRect.left;
+  const cy1 = first.top  + first.height / 2 - boardRect.top;
+  const cx2 = last.left  + last.width  / 2 - boardRect.left;
+  const cy2 = last.top   + last.height / 2 - boardRect.top;
+  const len  = Math.hypot(cx2 - cx1, cy2 - cy1);
+  const rot  = Math.atan2(cy2 - cy1, cx2 - cx1) * 180 / Math.PI;
+  const mx   = (cx1 + cx2) / 2;
+  const my   = (cy1 + cy2) / 2;
+
+  winLineEl.style.width  = `${len}px`;
+  winLineEl.style.left   = `${mx}px`;
+  winLineEl.style.top    = `${my}px`;
+  winLineEl.style.setProperty('--rot', `${rot}deg`);
+  winLineEl.classList.add('show');
+
+  // highlight the three winning cells
+  line.forEach(i => cells[i].classList.add('is-win'));
+}
+
+/**
+ * Update the status line and scoreboard highlight.
+ * @param {string} [msg] - Override text; if omitted, derived from state.
+ */
+function updateStatus(msg) {
+  if (state.gameOver) {
+    const winner = getWinner(state.board);
+    if (winner) {
+      statusEl.textContent = `Player ${winner.player} wins!`;
+      statusEl.dataset.result = 'win';
+      delete statusEl.dataset.turn;
+      tileX.classList.toggle('is-active', winner.player === 'X');
+      tileO.classList.toggle('is-active', winner.player === 'O');
+    } else {
+      statusEl.textContent = 'Draw!';
+      statusEl.dataset.result = 'draw';
+      delete statusEl.dataset.turn;
+      tileX.classList.remove('is-active');
+      tileO.classList.remove('is-active');
+    }
+  } else {
+    statusEl.textContent = `Player ${state.current}'s turn`;
+    statusEl.dataset.turn = state.current;
+    delete statusEl.dataset.result;
+    tileX.classList.toggle('is-active', state.current === 'X');
+    tileO.classList.toggle('is-active', state.current === 'O');
+  }
+  if (msg) statusEl.textContent = msg;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   GAME LOGIC
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Place a mark at the given index, switch turns, check for end-of-game.
+ * @param {number} index - 0–8.
+ */
+function handleMove(index) {
+  if (state.gameOver || state.board[index]) return;
+
+  state.board[index] = state.current;
+  renderBoard();
+
+  const result = getWinner(state.board);
+  if (result) {
+    state.gameOver = true;
+    if (result.player === 'X') state.scores.x++;
+    else state.scores.o++;
+    saveScores();
+    renderScores();
+    showWinLine(result.line);
+    updateStatus();
+    return;
+  }
+
+  if (state.board.every(Boolean)) {
+    state.gameOver = true;
+    state.scores.draws++;
+    saveScores();
+    renderScores();
+    updateStatus();
+    return;
+  }
+
+  state.current = state.current === 'X' ? 'O' : 'X';
+  updateStatus();
+
+  // Trigger CPU move if in CPU mode and it's O's turn
+  if (state.mode === 'cpu' && state.current === CONFIG.AI) {
+    computerTurn();
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   AI (minimax with alpha-beta pruning)
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Minimax search over the full game tree (a 3x3 board is tiny, so no depth limit is needed).
+ * @param {(string|null)[]} board
+ * @param {string} player - 'X' (maximiser) or 'O' (minimiser).
+ * @returns {number} Score: +10 win for X, -10 win for O, 0 draw.
+ */
+function minimax(board, player) {
+  const result = getWinner(board);
+  if (result) return result.player === 'X' ? 10 : -10;
+  if (board.every(Boolean)) return 0;
+
+  let alpha = -Infinity;
+  let beta  =  Infinity;
+  const maximizing = player === 'X';
+
+  for (let i = 0; i < 9; i++) {
+    if (board[i]) continue;
+    board[i] = player;
+    const score = minimax(board, player === 'X' ? 'O' : 'X');
+    board[i] = null;
+
+    if (maximizing) {
+      alpha = Math.max(alpha, score);
+    } else {
+      beta = Math.min(beta, score);
+    }
+    if (beta <= alpha) break; // alpha-beta cutoff
+  }
+
+  return maximizing ? alpha : beta;
+}
+
+/**
+ * Find the best move index for the given player.
+ * @param {(string|null)[]} board
+ * @returns {number} Index 0–8.
+ */
+function bestMove(board) {
+  // The computer plays O, the minimiser, so it looks for the LOWEST score.
+  let bestScore = Infinity;
+  let move = -1;
+  for (let i = 0; i < 9; i++) {
+    if (board[i]) continue;
+    board[i] = CONFIG.AI;
+    const score = minimax(board, CONFIG.HUMAN); // opponent's turn next
+    board[i] = null;
+    if (score < bestScore) {
+      bestScore = score;
+      move = i;
+    }
+  }
+  return move;
+}
+
+/**
+ * Schedule the CPU's move after a short delay.
+ */
+function computerTurn() {
+  boardEl.classList.add('is-thinking');
+  state.aiTimer = setTimeout(() => {
+    boardEl.classList.remove('is-thinking');
+    state.aiTimer = null;
+    const move = bestMove(state.board);
+    if (move >= 0) handleMove(move);
+  }, CONFIG.AI_DELAY);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   GAME / MODE LIFECYCLE
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Start a fresh round (board cleared, X goes first).
+ */
+function newRound() {
+  if (state.aiTimer) {
+    clearTimeout(state.aiTimer);
+    state.aiTimer = null;
+  }
+  state.board    = Array(9).fill(null);
+  state.current  = 'X';
+  state.gameOver = false;
+  renderBoard();
+  winLineEl.classList.remove('show');
+  cells.forEach(c => c.classList.remove('is-win', 'is-filled'));
+  updateStatus();
+}
+
+/**
+ * Reset the scoreboard and start a new round.
+ */
+function resetScores() {
+  state.scores = { x: 0, o: 0, draws: 0 };
+  saveScores();
+  renderScores();
+  newRound();
+}
+
+/**
+ * Switch between PvP and CPU modes.
+ * @param {'pvp'|'cpu'} mode
+ */
+function setMode(mode) {
+  state.mode = mode;
+  modePvp.classList.toggle('is-active', mode === 'pvp');
+  modeCpu.classList.toggle('is-active', mode === 'cpu');
+  modePvp.setAttribute('aria-pressed', String(mode === 'pvp'));
+  modeCpu.setAttribute('aria-pressed', String(mode === 'cpu'));
+  newRound();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   EVENT LISTENERS
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Handle a move made by a person; ignored while the computer is on turn.
+ * @param {number} i - Cell index 0-8.
+ */
+function humanMove(i) {
+  if (state.mode === 'cpu' && state.current === CONFIG.AI) return;
+  handleMove(i);
+}
+
+// Cell clicks
+cells.forEach((cell, i) => {
+  cell.addEventListener('click', () => humanMove(i));
+});
+
+// Keyboard: 1-9 map to cells 0-8
+document.addEventListener('keydown', (e) => {
+  if (e.key >= '1' && e.key <= '9') {
+    humanMove(Number(e.key) - 1);
+  }
+});
+
+// Mode toggles
+modePvp.addEventListener('click', () => setMode('pvp'));
+modeCpu.addEventListener('click', () => setMode('cpu'));
+
+// Restart (keeps scores)
+restartBtn.addEventListener('click', newRound);
+
+// Reset scores
+resetBtn.addEventListener('click', resetScores);
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   INIT
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+function init() {
+  state.scores = loadScores();
+  renderScores();
+  renderBoard();
+  updateStatus();
+}
+
+init();
+</script>
+</body>
+</html>
